@@ -9,13 +9,25 @@ import os
 import urllib.request
 from functools import lru_cache
 
+# Rate limiting
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+
 # ─── App Initialization & Security ─────────────────────────────────────────
+
+limiter = Limiter(key_func=get_remote_address)
 
 app = FastAPI(
     title="CapstoneAI API", 
     description="Enterprise-grade Backend for CapstoneAI Project Generator",
     version="1.1.0"
 )
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 ALLOWED_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
 if os.getenv("FRONTEND_URL"):
@@ -105,8 +117,8 @@ def get_ideas_for_profile(interests_tuple: tuple, skills_tuple: tuple, complexit
 class ProfileInput(BaseModel):
     name: str = Field(..., min_length=2, max_length=50, description="User's full name")
     academic_field: str = Field(..., min_length=2, max_length=100)
-    interests: List[str] = Field(..., max_items=20)
-    skills: List[str] = Field(..., max_items=50)
+    interests: List[str] = Field(..., max_length=20)
+    skills: List[str] = Field(..., max_length=50)
     complexity: str = Field(..., pattern="^(Beginner|Intermediate|Advanced)$")
     time_available: int = Field(..., ge=1, le=52)
     github_username: Optional[str] = Field(None, max_length=200)
@@ -117,12 +129,14 @@ class GitHubAnalyzeRequest(BaseModel):
 # ─── API Endpoints ────────────────────────────────────────────────────────
 
 @app.get("/", tags=["Health"])
-def read_root():
+@limiter.limit("60/minute")
+def read_root(request: Request):
     """Health check endpoint."""
     return {"status": "online", "message": "Welcome to CapstoneAI API"}
 
 @app.post("/api/generate-ideas", tags=["AI Generation"])
-def generate_ideas(profile: ProfileInput):
+@limiter.limit("20/minute")
+def generate_ideas(request: Request, profile: ProfileInput):
     """
     PROBLEM ALIGNMENT: Generates highly tailored final-year project ideas,
     aligning directly with the student's constraints to ensure success.
@@ -155,7 +169,8 @@ def fetch_github_repos(username: str) -> list:
         return json.loads(response.read().decode())
 
 @app.post("/api/analyze-github", tags=["Analysis"])
-def analyze_github(req: GitHubAnalyzeRequest):
+@limiter.limit("10/minute")
+def analyze_github(request: Request, req: GitHubAnalyzeRequest):
     """
     Analyzes a GitHub profile to determine technical proficiency.
     """
